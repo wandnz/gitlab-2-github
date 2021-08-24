@@ -1,0 +1,16 @@
+{
+    "github": {
+      "clone": "git@github.com:org/repo.git",
+      "api_url": "https://api.github.com or https://<GitHub instance>/api/v3",
+      "repo": "org/repo",
+      "username": "gitlabbot",
+      "email": "gitlabbot@email.com",
+      "token": "<personal access token>"
+    },
+    "gitlab": {
+      "usermap": {
+        "1": {"name": "John Doe"},
+        "2": {"name": "GitLab", "username": "gitlab"}
+    }
+  }
+}
