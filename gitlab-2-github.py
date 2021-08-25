@@ -149,7 +149,7 @@ def add_notes(notes, n, user_map, settings):
             continue
 
         text = note["note"]
-        if note["position"]:
+        if note["position"] and isinstance(note["position"], dict) and "new_path" in note["position"] and "new_line" in note["position"]:
             text = "<em>{} line {}</em>\n\n{}".format(
                 note["position"]["new_path"],
                 note["position"]["new_line"],
