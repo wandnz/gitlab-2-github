@@ -221,6 +221,10 @@ def migrate_merge_requests(merge_requests, settings):
         for mr in sorted(merge_requests, key=lambda x: x["iid"]):
             if mr["iid"] in already_done:
                 continue
+            
+            if mr["state"] == "closed":
+                if not mr["merge_request_diff"]["merge_request_diff_files"] or not mr["merge_request_diff"]["merge_request_diff_commits"]:
+                    continue
 
             print("Processing merge request '{}'".format(mr["title"]))
 
