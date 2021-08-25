@@ -241,7 +241,10 @@ def migrate_merge_requests(merge_requests, settings):
 
                     # Create source branch
                     run_cmd(git_checkout.format(mr["target_branch"]))
-                    run_cmd(git_checkout.format(mr["merge_request_diff"]["head_commit_sha"]))
+                    try:
+                        run_cmd(git_checkout.format(mr["merge_request_diff"]["head_commit_sha"]))
+                    except:
+                        run_cmd(git_checkout.format(mr["merge_commit_sha"]))
                     run_cmd(git_branch.format(source_branch))
                     run_cmd(git_push.format(source_branch))
                 elif mr["state"] == "closed":
