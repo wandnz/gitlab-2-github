@@ -229,9 +229,13 @@ def migrate_merge_requests(merge_requests, settings):
             print("Processing merge request '{}'".format(mr["title"]))
 
             if mr["state"] == "merged" or mr["state"] == "closed":
+                source_branch = mr["source_branch"]
+
+                if source_branch == "master":
+                    source_branch = "{}-{}".format(mr["source_branch"], mr["merge_request_diff"]["head_commit_sha"][:7])
+
                 if mr["state"] == "merged":
                     target_branch = "{}-{}".format(mr["target_branch"], mr["merge_request_diff"]["base_commit_sha"][:7])
-                    source_branch = mr["source_branch"]
 
                     # Create target branch
                     run_cmd(git_checkout.format(mr["target_branch"]))
@@ -249,7 +253,6 @@ def migrate_merge_requests(merge_requests, settings):
                     run_cmd(git_push.format(source_branch))
                 elif mr["state"] == "closed":
                     target_branch = mr["target_branch"]
-                    source_branch = mr["source_branch"]
 
                     # Create source branch
                     run_cmd(git_checkout.format(mr["target_branch"]))
