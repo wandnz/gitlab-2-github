@@ -34,6 +34,7 @@ import sys
 import os
 import requests
 import time
+import re
 
 SETTINGS_FILE = "settings.json"
 MERGE_REQUESTS_FILE = "tree/project/merge_requests.ndjson"
@@ -154,7 +155,13 @@ def put_request(path, body, settings):
     
     return r
 
-def create_note(user, time, note):
+def create_note(user, time, note, settings):
+    regex = re.compile(r'^#\d+$|^#\d+(?![a-zA-Z_])|(?<![a-zA-Z_])#\d+$|(?<![a-zA-Z_])#\d+(?![a-zA-Z_])', re.MULTILINE)
+    note = re.sub(regex, lambda m: "#{}".format(int(m[0][1:]) + settings["issues_offset"]), note)
+
+    regex = re.compile(r'^!\d+$|^!\d+(?![a-zA-Z_])|(?<![a-zA-Z_])!\d+$|(?<![a-zA-Z_])!\d+(?![a-zA-Z_])', re.MULTILINE)
+    note = re.sub(regex, lambda m: "#{}".format(m[0][1:]), note)
+
     return "In GitLab, by {} on {}\n\n{}".format(user, time.split("T", 1)[0], note)
 
 def add_notes(notes, n, user_map, settings):
@@ -169,7 +176,7 @@ def add_notes(notes, n, user_map, settings):
                 note["position"]["new_line"],
                 note["note"])
 
-        post_request("issues/{}/comments".format(n), {"body": create_note(user_map[note["author_id"]], note["created_at"], text)}, settings)
+        post_request("issues/{}/comments".format(n), {"body": create_note(user_map[note["author_id"]], note["created_at"], text, settings)}, settings)
         time.sleep(RATE_LIMIT_SECONDS)
 
 def object_created_in_github(iid, file):
@@ -189,7 +196,7 @@ def add_pull(mr, target, source, name_map, username_map, settings):
 
     mr_body = {
         "title": mr["title"],
-        "body": create_note(name_map[mr["author_id"]], mr["created_at"], mr["description"]),
+        "body": create_note(name_map[mr["author_id"]], mr["created_at"], mr["description"], settings),
         "base": target,
         "head": source
     }
@@ -214,6 +221,28 @@ def add_pull(mr, target, source, name_map, username_map, settings):
         patch_request("pulls/{}".format(pr), {"state": "closed"}, settings)
         time.sleep(RATE_LIMIT_SECONDS)
 
+def add_pull_as_issue(mr, name_map, username_map, settings):
+    print("Adding merge request as issue '{}'".format(mr["title"]))
+
+    body_text = "<em>Please note this issue was created as a result of the diff missing from the original merge request.</em>\n\n{}".format(
+        create_note(name_map[mr["author_id"]], mr["created_at"], mr["description"], settings)
+    )
+
+    mr_body = {
+        "title": "Merge request: {}".format(mr["title"]),
+        "body": body_text
+    }
+    r = post_request("issues", mr_body, settings)
+    object_created_in_github(mr["iid"], "merge_requests_added")
+    time.sleep(RATE_LIMIT_SECONDS)
+    pr = r.json()["number"]
+
+    add_notes(mr["notes"], pr, name_map, settings)
+
+    if mr["state"] == "merged" or mr["state"] == "closed":
+        patch_request("issues/{}".format(pr), {"state": "closed"}, settings)
+        time.sleep(RATE_LIMIT_SECONDS)
+
 def migrate_merge_requests(merge_requests, settings):
     already_done = get_objects_created("merge_requests_added")
     name_map = map_id_display_name(settings)
@@ -236,13 +265,14 @@ def migrate_merge_requests(merge_requests, settings):
             if mr["iid"] in already_done:
                 continue
             
-            if mr["state"] == "closed":
+            if mr["state"] == "closed" or mr["state"] == "opened" and mr["author_id"] not in username_map:
                 if not mr["merge_request_diff"]["merge_request_diff_files"] or not mr["merge_request_diff"]["merge_request_diff_commits"]:
+                    add_pull_as_issue(mr, name_map, username_map, settings)
                     continue
 
             print("Processing merge request '{}'".format(mr["title"]))
 
-            if mr["state"] == "merged" or mr["state"] == "closed":
+            if mr["state"] == "merged" or mr["state"] == "closed" or mr["state"] == "opened" and mr["author_id"] not in username_map:
                 source_branch = mr["source_branch"]
 
                 if source_branch == "master":
@@ -265,7 +295,7 @@ def migrate_merge_requests(merge_requests, settings):
                         run_cmd(git_checkout.format(mr["merge_commit_sha"]))
                     run_cmd(git_branch.format(source_branch))
                     run_cmd(git_push.format(source_branch))
-                elif mr["state"] == "closed":
+                elif mr["state"] == "closed" or mr["state"] == "opened":
                     target_branch = mr["target_branch"]
 
                     # Create source branch
@@ -279,8 +309,10 @@ def migrate_merge_requests(merge_requests, settings):
 
                 add_pull(mr, target_branch, source_branch, name_map, username_map, settings)
                 
-                run_cmd(git_delete_remote_branch.format(source_branch))
-                run_cmd(git_delete_local_branch.format(source_branch))
+                if mr["state"] != "opened":
+                    run_cmd(git_delete_remote_branch.format(source_branch))
+                    run_cmd(git_delete_local_branch.format(source_branch))
+
                 if mr["state"] == "merged":
                     run_cmd(git_delete_remote_branch.format(target_branch))
                     run_cmd(git_delete_local_branch.format(target_branch))
@@ -302,7 +334,7 @@ def migrate_issues(issues, settings):
 
         issue_body = {
             "title": issue["title"],
-            "body": create_note(name_map[issue["author_id"]], issue["created_at"], issue["description"])#,
+            "body": create_note(name_map[issue["author_id"]], issue["created_at"], issue["description"], settings)#,
             # "labels": [l["label"]["title"] for l in issue["label_links"]]
         }
         r = post_request("issues", issue_body, settings)
@@ -389,9 +421,11 @@ def main():
 
     with open(ISSUES_FILE, "r") as issues_file:
         issues = [json.loads(x) for x in issues_file.readlines()]
+    
+    settings["issues_offset"] = len(merge_requests)
 
-    migrate_issues(issues, settings)
     migrate_merge_requests(merge_requests, settings)
+    migrate_issues(issues, settings)
 
 if __name__ == "__main__":
   main()
