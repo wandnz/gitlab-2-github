@@ -44,6 +44,11 @@ REQUEST_HEADERS = {
 }
 RATE_LIMIT_SECONDS = 1
 
+# Using these regexes is not perfect, but they handle most of our cases
+ISSUE_REGEX = re.compile(r'(?<![a-zA-Z_])#\d+(?!\d*[a-zA-Z_])')
+MR_REGEX = re.compile(r'(?<![a-zA-Z_])!\d+(?!\d*[a-zA-Z_])')
+EXCLUDE_REGEX = re.compile(r'\[.*\]\(.*\)|!\[.*\]|`')
+
 def run_cmd(cmd):
     rc = os.system(cmd)
     if rc != 0:
@@ -116,6 +121,19 @@ def add_diffs(tmpdir, diffs, commits):
     run_cmd(git_add)
     run_cmd(git_commit)
 
+def get_request(path, body, settings):
+    url = "{}/repos/{}/{}".format(settings["github"]["api_url"], settings["github"]["repo"], path)
+    r = requests.get(
+        url, 
+        headers=REQUEST_HEADERS,
+        auth=(settings["github"]["username"], settings["github"]["token"]),
+        json=body)
+
+    if r.status_code != 200:
+        raise Exception("(Code: {}) GET request failed '{}'".format(r.status_code, url))
+    
+    return r
+
 def post_request(path, body, settings):
     url = "{}/repos/{}/{}".format(settings["github"]["api_url"], settings["github"]["repo"], path)
     r = requests.post(
@@ -155,28 +173,39 @@ def put_request(path, body, settings):
     
     return r
 
-def create_note(user, time, note, settings):
-    regex = re.compile(r'^#\d+$|^#\d+(?![a-zA-Z_])|(?<![a-zA-Z_])#\d+$|(?<![a-zA-Z_])#\d+(?![a-zA-Z_])', re.MULTILINE)
-    note = re.sub(regex, lambda m: "#{}".format(int(m[0][1:]) + settings["issues_offset"]), note)
-
-    regex = re.compile(r'^!\d+$|^!\d+(?![a-zA-Z_])|(?<![a-zA-Z_])!\d+$|(?<![a-zA-Z_])!\d+(?![a-zA-Z_])', re.MULTILINE)
-    note = re.sub(regex, lambda m: "#{}".format(m[0][1:]), note)
+def create_body(user, time, note, issues_offset=None):
+    if not EXCLUDE_REGEX.search(note):
+        if issues_offset:
+            note = re.sub(ISSUE_REGEX, lambda m: "#{}".format(int(m[0][1:]) + issues_offset), note)
+        note = re.sub(MR_REGEX, lambda m: "#{}".format(m[0][1:]), note)
 
     return "In GitLab, by {} on {}\n\n{}".format(user, time.split("T", 1)[0], note)
+
+def create_issue_body(issue, name_map, issues_offset=None):
+    return create_body(name_map[issue["author_id"]], issue["created_at"], issue["description"], issues_offset)
+
+def create_mr_issue_body(mr, name_map, issues_offset=None):
+    return "<em>Please note this issue was created as a result of the diff missing from the original merge request.</em>\n\n{}".format(
+        create_issue_body(mr, name_map, issues_offset)
+    )
+
+def create_note(note, user_map, issues_offset=None):
+    if note["position"] and isinstance(note["position"], dict) and "new_path" in note["position"] and "new_line" in note["position"]:
+        text = "<em>{} line {}</em>\n\n{}".format(
+            note["position"]["new_path"],
+            note["position"]["new_line"],
+            note["note"])
+    else:
+        text = note["note"]
+
+    return create_body(user_map[note["author_id"]], note["created_at"], text, issues_offset)
 
 def add_notes(notes, n, user_map, settings):
     for note in sorted(notes, key=lambda x: x["id"]):
         if note["system"]:
             continue
 
-        text = note["note"]
-        if note["position"] and isinstance(note["position"], dict) and "new_path" in note["position"] and "new_line" in note["position"]:
-            text = "<em>{} line {}</em>\n\n{}".format(
-                note["position"]["new_path"],
-                note["position"]["new_line"],
-                note["note"])
-
-        post_request("issues/{}/comments".format(n), {"body": create_note(user_map[note["author_id"]], note["created_at"], text, settings)}, settings)
+        post_request("issues/{}/comments".format(n), {"body": create_note(note, user_map)}, settings)
         time.sleep(RATE_LIMIT_SECONDS)
 
 def object_created_in_github(iid, file):
@@ -196,7 +225,7 @@ def add_pull(mr, target, source, name_map, username_map, settings):
 
     mr_body = {
         "title": mr["title"],
-        "body": create_note(name_map[mr["author_id"]], mr["created_at"], mr["description"], settings),
+        "body": create_issue_body(mr, name_map),
         "base": target,
         "head": source
     }
@@ -224,13 +253,9 @@ def add_pull(mr, target, source, name_map, username_map, settings):
 def add_pull_as_issue(mr, name_map, username_map, settings):
     print("Adding merge request as issue '{}'".format(mr["title"]))
 
-    body_text = "<em>Please note this issue was created as a result of the diff missing from the original merge request.</em>\n\n{}".format(
-        create_note(name_map[mr["author_id"]], mr["created_at"], mr["description"], settings)
-    )
-
     mr_body = {
         "title": "Merge request: {}".format(mr["title"]),
-        "body": body_text
+        "body": create_mr_issue_body(mr, name_map)
     }
     r = post_request("issues", mr_body, settings)
     object_created_in_github(mr["iid"], "merge_requests_added")
@@ -334,7 +359,7 @@ def migrate_issues(issues, settings):
 
         issue_body = {
             "title": issue["title"],
-            "body": create_note(name_map[issue["author_id"]], issue["created_at"], issue["description"], settings)#,
+            "body": create_issue_body(issue, name_map)#,
             # "labels": [l["label"]["title"] for l in issue["label_links"]]
         }
         r = post_request("issues", issue_body, settings)
@@ -359,6 +384,42 @@ def migrate_issues(issues, settings):
         if issue["closed_at"]:
             patch_request("issues/{}".format(n), {"state": "closed"}, settings)
             time.sleep(RATE_LIMIT_SECONDS)
+
+def refresh_issue(id, body, issue, issues_offset, name_map, settings):
+    print("Updating issue '{}' ({}) comments".format(issue["title"], id))
+    if not EXCLUDE_REGEX.search(issue["description"]) and ISSUE_REGEX.search(issue["description"]):
+        patch_request("issues/{}".format(id), {"body": body}, settings)
+        time.sleep(RATE_LIMIT_SECONDS)
+
+    n = 1
+    for note in sorted(issue["notes"], key=lambda x: x["id"]):
+        if note["system"]:
+            continue
+        
+        if not EXCLUDE_REGEX.search(note["note"]) and ISSUE_REGEX.search(note["note"]):
+            r = get_request("issues/{}/comments?per_page=1&page={}".format(id,n), {}, settings)
+            comment = r.json()[0]
+            comment_id = comment["id"]
+            patch_request("issues/comments/{}".format(comment_id), {"body": create_note(note, name_map, issues_offset)}, settings)
+            time.sleep(RATE_LIMIT_SECONDS)
+
+        n += 1
+
+def refresh_issue_linking(merge_requests, issues, settings):
+    name_map = map_id_display_name(settings)
+    username_map = map_id_username(settings)
+    issues_offset = len(merge_requests)
+
+    for mr in sorted(merge_requests, key=lambda x: x["iid"]):
+        body = create_issue_body(mr, name_map, issues_offset)
+        if mr["state"] == "closed" or mr["state"] == "opened" and mr["author_id"] not in username_map:
+                if not mr["merge_request_diff"]["merge_request_diff_files"] or not mr["merge_request_diff"]["merge_request_diff_commits"]:
+                    body = create_mr_issue_body(mr, name_map, issues_offset)
+        refresh_issue(mr["iid"], body, mr, issues_offset, name_map, settings)
+
+    for issue in sorted(issues, key=lambda x: x["iid"]):
+        body = create_issue_body(issue, name_map, issues_offset)
+        refresh_issue(issue["iid"] + issues_offset, body, issue, issues_offset, name_map, settings)
         
 def main():
     with open(SETTINGS_FILE, "r") as settings_file:
@@ -421,11 +482,10 @@ def main():
 
     with open(ISSUES_FILE, "r") as issues_file:
         issues = [json.loads(x) for x in issues_file.readlines()]
-    
-    settings["issues_offset"] = len(merge_requests)
 
     migrate_merge_requests(merge_requests, settings)
     migrate_issues(issues, settings)
 
+    refresh_issue_linking(merge_requests, issues, settings)
 if __name__ == "__main__":
   main()
