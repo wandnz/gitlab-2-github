@@ -47,7 +47,12 @@ RATE_LIMIT_SECONDS = 1
 # Using these regexes is not perfect, but they handle most of our cases
 ISSUE_REGEX = re.compile(r'(?<![a-zA-Z_])#\d+(?!\d*[a-zA-Z_])')
 MR_REGEX = re.compile(r'(?<![a-zA-Z_])!\d+(?!\d*[a-zA-Z_])')
-EXCLUDE_REGEX = re.compile(r'\[.*\]\(.*\)|!\[.*\]|`')
+EXCLUDE_REGEX = re.compile(
+    r'```[^(```)]*(?<![a-zA-Z_])#\d+(?!\d*[a-zA-Z_])[^(```)]*```|' +
+    r'`(?!\s)[^`]*(?<![a-zA-Z_])#\d+(?!\d*[a-zA-Z_])[^`]*(?<!\s)`|' +
+    r'\[.*(?<![a-zA-Z_])#\d+(?!\d*[a-zA-Z_]).*\]\([^\)]*\)|' +
+    r'\[.*\]\([^\)]*(?<![a-zA-Z_])#\d+(?!\d*[a-zA-Z_])[^\)]*\)|' +
+    r'!\[.*(?<![a-zA-Z_])#\d+(?!\d*[a-zA-Z_]).*\]', re.DOTALL)
 
 def run_cmd(cmd):
     rc = os.system(cmd)
