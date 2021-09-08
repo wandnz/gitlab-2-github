@@ -317,10 +317,10 @@ def migrate_merge_requests(merge_requests, settings):
                 source_branch = mr["source_branch"]
 
                 if source_branch == "master":
-                    source_branch = "{}-branch".format(mr["source_branch"])
+                    source_branch = "{}-fork".format(mr["source_branch"])
 
                 if mr["state"] == "merged":
-                    target_branch = "{}-gitlab".format(mr["target_branch"])
+                    target_branch = "{}-branch".format(mr["target_branch"])
 
                     # Create target branch
                     run_cmd(git_checkout.format(mr["target_branch"]))
