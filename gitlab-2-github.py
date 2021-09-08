@@ -59,6 +59,18 @@ def run_cmd(cmd):
     if rc != 0:
         raise Exception("(Code: {}) Failed to run command '{}'".format(rc, cmd))
 
+def update_commit_messages(git_cmd, repo_dir):
+    cwd = os.getcwd()
+    cmd = "FILTER_BRANCH_SQUELCH_WARNING=1 " + git_cmd + " filter-branch -f --msg-filter " + \
+        """'sed '"'"':a;N;$!ba;s;Merge branch '"'"'"'"'"'"'"'"'\\(.*\\)'"'"'"'"'"'"'"'"' into """ + \
+        """'"'"'"'"'"'"'"'"'.*'"'"'"'"'"'"'"'"'\\n\\n\([^\\n]*\)\\n\\n.*""" + \
+        """See merge request \\(.*\\)\\/.*!\\([0-9]*\\);Merge pull request #\\4 from \\3/\\1\\n\\n\\2;'"'"' | """ + \
+        """sed '"'"'/^Merge pull request/! s/.* #[0-9].*//'"'" """ + \
+        "> /dev/null 2> /dev/null"
+    os.chdir(repo_dir)
+    run_cmd(cmd)
+    os.chdir(cwd)
+
 def map_id_display_name(settings):
     usermap = {}
     for k, v in settings["gitlab"]["usermap"].items():
@@ -280,7 +292,7 @@ def migrate_merge_requests(merge_requests, settings):
 
     with tempfile.TemporaryDirectory() as tmpdir:
         repo_dir = "{}/repo".format(tmpdir)
-        os.system("git clone -q '{}' '{}'".format(settings["github"]["clone"], repo_dir))
+        run_cmd("git clone -q '{}' '{}'".format(settings["github"]["clone"], repo_dir))
         git_cmd = "git --git-dir='{0}/.git' --work-tree='{0}'".format(repo_dir)
         run_cmd(git_cmd + " config user.name '{}'".format(settings["github"]["username"]))
         run_cmd(git_cmd + " config user.email '{}'".format(settings["github"]["email"]))
@@ -289,7 +301,6 @@ def migrate_merge_requests(merge_requests, settings):
         git_push = git_cmd + " push -q --set-upstream origin '{}' > /dev/null 2> /dev/null"
         git_delete_remote_branch = git_cmd + " push -q --delete origin '{}'"
         git_delete_local_branch = git_cmd + " branch -q -D '{}'"
-        git_fetch_mr = git_cmd + " fetch -q origin merge-requests/{}/head:{}"
 
         for mr in sorted(merge_requests, key=lambda x: x["iid"]):
             if mr["iid"] in already_done:
@@ -306,15 +317,16 @@ def migrate_merge_requests(merge_requests, settings):
                 source_branch = mr["source_branch"]
 
                 if source_branch == "master":
-                    source_branch = "{}-{}".format(mr["source_branch"], mr["merge_request_diff"]["head_commit_sha"][:7])
+                    source_branch = "{}-branch".format(mr["source_branch"])
 
                 if mr["state"] == "merged":
-                    target_branch = "{}-{}".format(mr["target_branch"], mr["merge_request_diff"]["base_commit_sha"][:7])
+                    target_branch = "{}-gitlab".format(mr["target_branch"])
 
                     # Create target branch
                     run_cmd(git_checkout.format(mr["target_branch"]))
                     run_cmd(git_checkout.format(mr["merge_request_diff"]["base_commit_sha"]))
                     run_cmd(git_branch.format(target_branch))
+                    update_commit_messages(git_cmd, repo_dir)
                     run_cmd(git_push.format(target_branch))
 
                     # Create source branch
@@ -324,6 +336,7 @@ def migrate_merge_requests(merge_requests, settings):
                     except:
                         run_cmd(git_checkout.format(mr["merge_commit_sha"]))
                     run_cmd(git_branch.format(source_branch))
+                    update_commit_messages(git_cmd, repo_dir)
                     run_cmd(git_push.format(source_branch))
                 elif mr["state"] == "closed" or mr["state"] == "opened":
                     target_branch = mr["target_branch"]
@@ -332,6 +345,8 @@ def migrate_merge_requests(merge_requests, settings):
                     run_cmd(git_checkout.format(mr["target_branch"]))
                     run_cmd(git_checkout.format(mr["merge_request_diff"]["base_commit_sha"]))
                     run_cmd(git_branch.format(source_branch))
+                    if mr["state"] == "opened":
+                        update_commit_messages(git_cmd, repo_dir)
                     add_diffs(tmpdir, mr["merge_request_diff"]["merge_request_diff_files"], mr["merge_request_diff"]["merge_request_diff_commits"])
                     run_cmd(git_push.format(source_branch))
                 
@@ -425,7 +440,18 @@ def refresh_issue_linking(merge_requests, issues, settings):
     for issue in sorted(issues, key=lambda x: x["iid"]):
         body = create_issue_body(issue, name_map, issues_offset)
         refresh_issue(issue["iid"] + issues_offset, body, issue, issues_offset, name_map, settings)
-        
+
+def update_main_commit_messages(settings):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        repo_dir = "{}/repo".format(tmpdir)
+        run_cmd("git clone -q '{}' '{}'".format(settings["github"]["clone"], repo_dir))
+        git_cmd = "git --git-dir='{0}/.git' --work-tree='{0}'".format(repo_dir)
+        run_cmd(git_cmd + " config user.name '{}'".format(settings["github"]["username"]))
+        run_cmd(git_cmd + " config user.email '{}'".format(settings["github"]["email"]))
+        run_cmd(git_cmd + " checkout -q 'master'")
+        update_commit_messages(git_cmd, repo_dir)
+        run_cmd(git_cmd + " push --force > /dev/null 2> /dev/null")
+
 def main():
     with open(SETTINGS_FILE, "r") as settings_file:
         settings = json.load(settings_file)
@@ -492,5 +518,7 @@ def main():
     migrate_issues(issues, settings)
 
     refresh_issue_linking(merge_requests, issues, settings)
+
+    update_main_commit_messages(settings)
 if __name__ == "__main__":
   main()
