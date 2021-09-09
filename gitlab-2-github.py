@@ -25,7 +25,7 @@ Assumptions:
 * no labels or milestones
 * no images in comments
 * can only recreate open merge requests if fork exists
-* only master branch exists
+* only main branch exists
 """
 
 import json
@@ -314,23 +314,25 @@ def migrate_merge_requests(merge_requests, settings):
             print("Processing merge request '{}'".format(mr["title"]))
 
             if mr["state"] == "merged" or mr["state"] == "closed" or mr["state"] == "opened" and mr["author_id"] not in username_map:
+                target_branch = mr["target_branch"]
                 source_branch = mr["source_branch"]
 
-                if source_branch == "master":
-                    source_branch = "{}-fork".format(mr["source_branch"])
+                if mr["state"] == "opened":
+                    target_branch = "main"
+
+                if source_branch == target_branch:
+                    source_branch = "{}-branch".format(source_branch)
 
                 if mr["state"] == "merged":
-                    target_branch = "{}-branch".format(mr["target_branch"])
-
                     # Create target branch
-                    run_cmd(git_checkout.format(mr["target_branch"]))
+                    run_cmd(git_checkout.format("main"))
                     run_cmd(git_checkout.format(mr["merge_request_diff"]["base_commit_sha"]))
                     run_cmd(git_branch.format(target_branch))
                     update_commit_messages(git_cmd, repo_dir)
                     run_cmd(git_push.format(target_branch))
 
                     # Create source branch
-                    run_cmd(git_checkout.format(mr["target_branch"]))
+                    run_cmd(git_checkout.format("main"))
                     try:
                         run_cmd(git_checkout.format(mr["merge_request_diff"]["head_commit_sha"]))
                     except:
@@ -338,31 +340,41 @@ def migrate_merge_requests(merge_requests, settings):
                     run_cmd(git_branch.format(source_branch))
                     update_commit_messages(git_cmd, repo_dir)
                     run_cmd(git_push.format(source_branch))
-                elif mr["state"] == "closed" or mr["state"] == "opened":
-                    target_branch = mr["target_branch"]
+                elif mr["state"] == "closed":
+                    # Create target branch
+                    run_cmd(git_checkout.format("main"))
+                    run_cmd(git_checkout.format(mr["merge_request_diff"]["base_commit_sha"]))
+                    run_cmd(git_branch.format(target_branch))
+                    update_commit_messages(git_cmd, repo_dir)
+                    run_cmd(git_push.format(target_branch))
 
                     # Create source branch
-                    run_cmd(git_checkout.format(mr["target_branch"]))
+                    run_cmd(git_checkout.format("main"))
                     run_cmd(git_checkout.format(mr["merge_request_diff"]["base_commit_sha"]))
                     run_cmd(git_branch.format(source_branch))
-                    if mr["state"] == "opened":
-                        update_commit_messages(git_cmd, repo_dir)
+                    update_commit_messages(git_cmd, repo_dir)
+                    add_diffs(tmpdir, mr["merge_request_diff"]["merge_request_diff_files"], mr["merge_request_diff"]["merge_request_diff_commits"])
+                    run_cmd(git_push.format(source_branch))
+                elif mr["state"] == "opened":
+                    # Create source branch
+                    run_cmd(git_checkout.format("main"))
+                    run_cmd(git_checkout.format(mr["merge_request_diff"]["base_commit_sha"]))
+                    run_cmd(git_branch.format(source_branch))
+                    update_commit_messages(git_cmd, repo_dir)
                     add_diffs(tmpdir, mr["merge_request_diff"]["merge_request_diff_files"], mr["merge_request_diff"]["merge_request_diff_commits"])
                     run_cmd(git_push.format(source_branch))
                 
-                run_cmd(git_checkout.format(mr["target_branch"]))
+                run_cmd(git_checkout.format("main"))
 
                 add_pull(mr, target_branch, source_branch, name_map, username_map, settings)
                 
                 if mr["state"] != "opened":
-                    run_cmd(git_delete_remote_branch.format(source_branch))
-                    run_cmd(git_delete_local_branch.format(source_branch))
-
-                if mr["state"] == "merged":
                     run_cmd(git_delete_remote_branch.format(target_branch))
                     run_cmd(git_delete_local_branch.format(target_branch))
+                    run_cmd(git_delete_remote_branch.format(source_branch))
+                    run_cmd(git_delete_local_branch.format(source_branch))
             elif mr["state"] == "opened":
-                target_branch = mr["target_branch"]
+                target_branch = "main"
                 source_branch = "{}:{}".format(username_map[mr["author_id"]], mr["source_branch"])
                 add_pull(mr, target_branch, source_branch, name_map, username_map, settings)
 
@@ -448,7 +460,7 @@ def update_main_commit_messages(settings):
         git_cmd = "git --git-dir='{0}/.git' --work-tree='{0}'".format(repo_dir)
         run_cmd(git_cmd + " config user.name '{}'".format(settings["github"]["username"]))
         run_cmd(git_cmd + " config user.email '{}'".format(settings["github"]["email"]))
-        run_cmd(git_cmd + " checkout -q 'master'")
+        run_cmd(git_cmd + " checkout -q 'main'")
         update_commit_messages(git_cmd, repo_dir)
         run_cmd(git_cmd + " push --force > /dev/null 2> /dev/null")
 

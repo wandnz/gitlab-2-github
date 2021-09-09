@@ -8,6 +8,7 @@ For migrating issues and merge requests from GitLab projects to GitHub repositor
 2. Clone GitLab repository: `git clone --mirror <gitlab_repo>`
 3. Change directory: `cd <repo_dir>`
 4. Push to GitHub repository: `git push --mirror --no-verify <github_repo>`
-5. Download and extract the GitLab project export to a new working directory
-6. Edit `settings.json`
-7. Execute `gitlab-2-github.py`
+5. In GitHub, goto **Settings > Branches**, then rename default branch to `main`
+6. Download and extract the GitLab project export to a new working directory
+7. Edit `settings.json`
+8. Execute `gitlab-2-github.py`
